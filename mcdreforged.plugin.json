@@ -1,0 +1,13 @@
+{
+    "id": "blackjack_game",
+    "name": "21点",
+    "description": "A simple blackjack game plugin for MCDReforged",
+    "authors": [
+        "66888",
+        "Deepseek"
+    ],
+    "version": "1.0.0",
+    "dependencies": {
+        "mcdreforged": ">=2.0.0"
+    }
+}
