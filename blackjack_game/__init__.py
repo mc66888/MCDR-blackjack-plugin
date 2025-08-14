@@ -281,9 +281,7 @@ class BlackjackGame:
         """结束游戏"""
         if player in self.player_games:
             del self.player_games[player]
-            self.server.tell(player, "§a游戏结束! 最终得分: §e{:.1f}".format(
-                self.player_games[player].score if player in self.player_games else 0
-            ))
+            self.server.tell(player, "§a游戏结束！")
         else:
             self.server.tell(player, "§a你当前没有进行中的游戏")
     
@@ -433,11 +431,9 @@ def on_load(server: PluginServerInterface, old):
         .then(Literal("p").runs(lambda src: game.process_command(src.player, 'p')))
         .then(Literal("sur").runs(lambda src: game.process_command(src.player, 'sur')))
     )
-    
     # 保存实例
     server.register_help_message('!!21', '21点纸牌游戏')
     server.game = game
-
 def on_unload(server: PluginServerInterface):
     """插件卸载时清理"""
     if hasattr(server, 'game'):
