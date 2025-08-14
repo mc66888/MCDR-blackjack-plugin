@@ -271,7 +271,7 @@ class BlackjackGame:
         """开始游戏"""
         game = self.get_player_game(player)
         if game.in_game:
-            self.server.tell(player, "§c你已经在游戏中! 使用!!21 s停牌或!!21 sur投降")
+            self.server.tell(player, "§c你已经在游戏中! 使用 !!21 stop 结束游戏")
             return
         
         game.start_new_round()
