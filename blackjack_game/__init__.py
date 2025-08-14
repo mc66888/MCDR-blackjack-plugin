@@ -2,15 +2,14 @@ from typing import Dict, List, Tuple
 import random
 from mcdreforged.api.all import *
 
-# 牌组定义
-CARDS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
+# 牌组定义 - 使用元组确保不可变
+CARDS = ('2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A')
 CARD_VALUES = {
     '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9,
     '10': 10, 'J': 10, 'Q': 10, 'K': 10, 'A': 11  # A默认为11，特殊处理
 }
 
 class PlayerHand:
-    """玩家的一手牌"""
     __slots__ = ('cards', 'bet', 'stand', 'busted', 'doubled', 'surrendered', 'is_split')
     
     def __init__(self, cards: List[str], bet: float = 1.0, is_split: bool = False):
@@ -23,21 +22,16 @@ class PlayerHand:
         self.is_split = is_split  # 是否来自分牌
     
     def add_card(self, card: str):
-        """添加一张牌"""
+        """添加一张牌并检查是否爆牌"""
         self.cards.append(card)
         self.check_bust()
     
     def check_bust(self):
-        """检查是否爆牌"""
-        _, busted = self.calculate_value()
-        self.busted = busted
-    
-    def calculate_value(self) -> Tuple[int, bool]:
-        """计算牌面点数和是否爆牌"""
+        """高效检查是否爆牌"""
         total = 0
         ace_count = 0
         
-        # 计算基础点数
+        # 快速计算点数
         for card in self.cards:
             if card == 'A':
                 ace_count += 1
@@ -46,29 +40,45 @@ class PlayerHand:
                 total += CARD_VALUES[card]
         
         # 处理A的情况
-        while total > 21 and ace_count > 0:
+        while total > 21 and ace_count:
             total -= 10
             ace_count -= 1
         
-        return total, total > 21
+        self.busted = total > 21
     
     def is_blackjack(self) -> bool:
-        """检查是否是21点（Blackjack）- 必须由两张牌组成且不是分牌后"""
-        if len(self.cards) != 2 or self.is_split:
-            return False
-        value, busted = self.calculate_value()
-        return value == 21 and not busted
+        """检查是否是21点 - 必须由两张牌组成且不是分牌后"""
+        return len(self.cards) == 2 and not self.is_split and self.calculate_value() == 21
     
     def is_five_dragons(self) -> bool:
         """检查是否是五小龙（五张牌未爆）"""
         return len(self.cards) >= 5 and not self.busted
     
+    def calculate_value(self) -> int:
+        """计算牌面点数（不检查爆牌）"""
+        total = 0
+        ace_count = 0
+        
+        for card in self.cards:
+            if card == 'A':
+                ace_count += 1
+                total += 11
+            else:
+                total += CARD_VALUES[card]
+        
+        while total > 21 and ace_count:
+            total -= 10
+            ace_count -= 1
+        
+        return total
+    
     def __str__(self) -> str:
         return ' '.join(self.cards)
 
 class PlayerGame:
-    """玩家游戏状态"""
-    __slots__ = ('player', 'hands', 'dealer_hand', 'current_hand_index', 'score', 'in_game')
+    """玩家游戏状态 - 使用__slots__减少内存占用"""
+    __slots__ = ('player', 'hands', 'dealer_hand', 'current_hand_index', 'score', 'in_game', 
+                 'dealer_value', 'dealer_busted')
     
     def __init__(self, player: str):
         self.player = player  # 玩家名称
@@ -77,6 +87,8 @@ class PlayerGame:
         self.current_hand_index = 0  # 当前操作的手牌索引
         self.score = 0.0  # 玩家当前分数
         self.in_game = False  # 是否在游戏中
+        self.dealer_value = 0  # 庄家点数缓存
+        self.dealer_busted = False  # 庄家是否爆牌缓存
     
     def start_new_round(self):
         """开始新一局游戏"""
@@ -89,10 +101,14 @@ class PlayerGame:
             self.hands[0].add_card(self.draw_card())
             self.dealer_hand.append(self.draw_card())
         
+        # 检查是否为Blackjack（自动停牌）
+        if self.hands[0].is_blackjack():
+            self.hands[0].stand = True
+        
         self.in_game = True
     
     def draw_card(self) -> str:
-        """随机抽取一张牌"""
+        """随机抽取一张牌 - 高效实现"""
         return random.choice(CARDS)
     
     def get_current_hand(self) -> PlayerHand:
@@ -121,9 +137,15 @@ class PlayerGame:
             hand.stand = True
     
     def double_down(self) -> bool:
-        """双倍下注，返回是否成功"""
+        """双倍下注 - 高效实现（禁止Blackjack时使用）"""
         hand = self.get_current_hand()
-        if len(hand.cards) == 2 and not hand.stand and not hand.busted and not hand.surrendered:
+        # 检查是否可以双倍下注：不能是Blackjack
+        if (not hand.stand and 
+            not hand.busted and 
+            not hand.surrendered and 
+            not hand.doubled and
+            not hand.is_blackjack()):  # 禁止Blackjack时双倍下注
+            
             hand.bet *= 2
             hand.doubled = True
             hand.add_card(self.draw_card())
@@ -132,16 +154,17 @@ class PlayerGame:
         return False
     
     def split(self) -> bool:
-        """分牌，返回是否成功"""
+        """分牌 - 高效实现"""
         hand = self.get_current_hand()
         # 检查是否可以分牌：两张相同点数的牌，且手牌数量少于4（最多分4次）
         if (len(hand.cards) == 2 and 
-            CARD_VALUES[hand.cards[0]] == CARD_VALUES[hand.cards[1]] and 
-            len(self.hands) < 4):  # 最多4次分牌（5手牌）
+            len(self.hands) < 4 and 
+            CARD_VALUES[hand.cards[0]] == CARD_VALUES[hand.cards[1]]):
             
-            # 创建新手牌（标记为分牌）
-            new_hand1 = PlayerHand([hand.cards[0]], hand.bet, is_split=True)
-            new_hand2 = PlayerHand([hand.cards[1]], hand.bet, is_split=True)
+            # 创建新手牌
+            card1, card2 = hand.cards
+            new_hand1 = PlayerHand([card1], hand.bet, is_split=True)
+            new_hand2 = PlayerHand([card2], hand.bet, is_split=True)
             
             # 添加新牌
             new_hand1.add_card(self.draw_card())
@@ -154,7 +177,7 @@ class PlayerGame:
         return False
     
     def surrender(self) -> bool:
-        """投降，返回是否成功"""
+        """投降 - 高效实现"""
         hand = self.get_current_hand()
         if len(hand.cards) == 2 and not hand.stand and not hand.busted:
             hand.surrendered = True
@@ -163,16 +186,17 @@ class PlayerGame:
         return False
     
     def dealer_play(self):
-        """庄家行动"""
+        """庄家行动 - 高效实现"""
+        # 预计算庄家点数
+        self.calculate_dealer_value()
+        
         # 庄家规则：大于等于17点停牌，否则要牌
-        while True:
-            total, busted = self.calculate_dealer_value()
-            if busted or total >= 17:
-                break
+        while not self.dealer_busted and self.dealer_value < 17:
             self.dealer_hand.append(self.draw_card())
+            self.calculate_dealer_value()
     
-    def calculate_dealer_value(self) -> Tuple[int, bool]:
-        """计算庄家点数和是否爆牌"""
+    def calculate_dealer_value(self):
+        """计算庄家点数和是否爆牌 - 结果缓存"""
         total = 0
         ace_count = 0
         
@@ -183,15 +207,15 @@ class PlayerGame:
             else:
                 total += CARD_VALUES[card]
         
-        while total > 21 and ace_count > 0:
+        while total > 21 and ace_count:
             total -= 10
             ace_count -= 1
         
-        return total, total > 21
+        self.dealer_value = total
+        self.dealer_busted = total > 21
     
     def settle_round(self):
-        """结算当前游戏"""
-        dealer_value, dealer_busted = self.calculate_dealer_value()
+        """结算当前游戏 - 高效实现"""
         round_score = 0
         
         # 结算每手牌
@@ -204,8 +228,6 @@ class PlayerGame:
                 round_score -= hand.bet  # 爆牌损失全部下注
                 continue
             
-            hand_value, _ = hand.calculate_value()
-            
             # 五小龙规则（五张牌未爆）且不是Blackjack
             if hand.is_five_dragons() and not hand.is_blackjack():
                 round_score += hand.bet
@@ -217,16 +239,16 @@ class PlayerGame:
                 continue
             
             # 庄家爆牌，玩家获胜
-            if dealer_busted:
+            if self.dealer_busted:
                 round_score += hand.bet
                 continue
             
             # 普通比较
-            if hand_value > dealer_value:
+            hand_value = hand.calculate_value()
+            if hand_value > self.dealer_value:
                 round_score += hand.bet
-            elif hand_value < dealer_value:
+            elif hand_value < self.dealer_value:
                 round_score -= hand.bet
-            # 平局不加分也不扣分
         
         # 更新玩家总分数
         self.score += round_score
@@ -234,18 +256,19 @@ class PlayerGame:
         return round_score
 
 class BlackjackGame:
-    """21点游戏管理器"""
+    """21点游戏管理器 - 高效实现"""
     def __init__(self, server: PluginServerInterface):
         self.server = server
         self.player_games: Dict[str, PlayerGame] = {}
-        self.help_msg = '''
-§6===== 21点小游戏 =====
+        
+        # 预定义帮助信息 - 避免重复创建
+        self.help_msg = '''§6===== 21点小游戏 =====
 §e!!21 help§f - 显示帮助信息
 §e!!21 start§f - 开始新游戏
 §e!!21 stop§f - 结束游戏
 §e!!21 h§f - 要牌
 §e!!21 s§f - 停牌
-§e!!21 d§f - 双倍下注
+§e!!21 d§f - 双倍下注（Blackjack时禁用）
 §e!!21 p§f - 分牌
 §e!!21 sur§f - 投降
 
@@ -253,19 +276,16 @@ class BlackjackGame:
 1. 目标: 点数接近21点但不超
 2. A可计为1点或11点
 3. 庄家规则: 点数≥17停牌
-4. Blackjack: 仅初始两张牌组成21点(1.5倍)
-5. 双倍下注: 奖励翻倍
+4. Blackjack: 仅初始两张牌组成21点(1.5倍)，自动停牌
+5. 双倍下注: 奖励翻倍(Blackjack时禁用)
 6. 分牌: 相同点数可拆分(最多分4次)
 7. 五小龙: 5张牌未爆直接获胜
 8. 投降输一半
-§6==================
-'''.strip()
+§6=================='''.strip()
 
     def get_player_game(self, player: str) -> PlayerGame:
         """获取玩家游戏状态，不存在则创建"""
-        if player not in self.player_games:
-            self.player_games[player] = PlayerGame(player)
-        return self.player_games[player]
+        return self.player_games.setdefault(player, PlayerGame(player))
     
     def start_game(self, player: str):
         """开始游戏"""
@@ -276,24 +296,31 @@ class BlackjackGame:
         
         game.start_new_round()
         self.display_game_state(player)
+        
+        # 如果是Blackjack，自动进入下一动作
+        if game.get_current_hand().is_blackjack():
+            self.server.tell(player, "§aBlackjack! 自动停牌")
+            self.next_action(player)
     
     def stop_game(self, player: str):
-        """结束游戏"""
+        """结束游戏 - 高效实现"""
         if player in self.player_games:
-            del self.player_games[player]
-            self.server.tell(player, "§a游戏结束！")
+            game = self.player_games.pop(player)
+            self.server.tell(player, f"§a游戏结束! 最终得分: §e{game.score:.1f}")
         else:
             self.server.tell(player, "§a你当前没有进行中的游戏")
     
     def display_game_state(self, player: str):
-        """显示当前游戏状态"""
+        """显示当前游戏状态 - 高效实现"""
         game = self.get_player_game(player)
         
         # 显示庄家手牌
         dealer_display = f"{game.dealer_hand[0]} ?" if len(game.dealer_hand) > 1 else ' '.join(game.dealer_hand)
         
         # 显示玩家所有手牌
-        hands_display = []
+        hands_info = []
+        current_index = game.current_hand_index
+        
         for i, hand in enumerate(game.hands):
             status = ""
             if hand.surrendered:
@@ -303,21 +330,22 @@ class BlackjackGame:
             elif hand.stand:
                 status = "§a(停牌)"
             
-            hand_prefix = f"手牌{i+1}:" if len(game.hands) > 1 else "你的牌:"
-            if i == game.current_hand_index:
-                hand_prefix = f"§e{hand_prefix}§f"
+            prefix = f"手牌{i+1}:" if len(game.hands) > 1 else "你的牌:"
+            if i == current_index:
+                prefix = f"§e{prefix}§f"
             
-            hands_display.append(f"{hand_prefix} {hand} {status}")
-        
-        # 显示分数
-        score_display = f"§6得分: §e{game.score:.1f}§f" if game.score % 1 > 0 else f"§6得分: §e{int(game.score)}§f"
+            # 显示Blackjack状态
+            blackjack_info = "§6(Blackjack!)" if hand.is_blackjack() else ""
+            bet_info = "§6(双倍)" if hand.doubled else ""
+            
+            hands_info.append(f"{prefix} {hand} {status} {blackjack_info} {bet_info}")
         
         # 组合消息
-        message = f"{score_display}\n{' '.join(hands_display)}\n§6庄家: {dealer_display}"
-        self.server.tell(player, message)
+        score_text = f"§6得分: §e{game.score:.1f}" if game.score % 1 > 0 else f"§6得分: §e{int(game.score)}"
+        self.server.tell(player, f"{score_text}\n{' '.join(hands_info)}\n§6庄家: {dealer_display}")
     
     def process_command(self, player: str, command: str):
-        """处理玩家命令"""
+        """处理玩家命令 - 高效实现"""
         game = self.get_player_game(player)
         
         if not game.in_game:
@@ -327,7 +355,14 @@ class BlackjackGame:
         command = command.lower()
         
         try:
+            hand = game.get_current_hand()
+            
             if command == 'h':  # 要牌
+                # 检查是否是Blackjack
+                if hand.is_blackjack():
+                    self.server.tell(player, "§cBlackjack时不能要牌! 已自动停牌")
+                    return
+                
                 game.hit()
                 hand = game.get_current_hand()
                 if hand.busted or hand.stand:
@@ -340,18 +375,33 @@ class BlackjackGame:
                 self.next_action(player)
             
             elif command == 'd':  # 双倍下注
+                # 检查是否是Blackjack
+                if hand.is_blackjack():
+                    self.server.tell(player, "§cBlackjack时不能双倍下注! 已自动停牌")
+                    return
+                
                 if game.double_down():
                     self.next_action(player)
                 else:
-                    self.server.tell(player, "§c无法双倍下注, 只能在第一轮使用")
+                    self.server.tell(player, "§c无法双倍下注, 该手牌已停牌/爆牌/投降或已双倍下注")
             
             elif command == 'p':  # 分牌
+                # 检查是否是Blackjack
+                if hand.is_blackjack():
+                    self.server.tell(player, "§cBlackjack时不能分牌! 已自动停牌")
+                    return
+                
                 if game.split():
                     self.display_game_state(player)
                 else:
                     self.server.tell(player, "§c无法分牌, 只能分相同点数的牌")
             
             elif command == 'sur':  # 投降
+                # 检查是否是Blackjack
+                if hand.is_blackjack():
+                    self.server.tell(player, "§cBlackjack时不能投降! 已自动停牌")
+                    return
+                
                 if game.surrender():
                     self.next_action(player)
                 else:
@@ -365,7 +415,7 @@ class BlackjackGame:
             self.server.tell(player, "§c命令执行出错, 请重试")
     
     def next_action(self, player: str):
-        """处理下一步动作"""
+        """处理下一步动作 - 高效实现"""
         game = self.get_player_game(player)
         
         # 检查是否还有未操作的手牌
@@ -383,27 +433,25 @@ class BlackjackGame:
         
         # 显示最终结果
         dealer_cards = ' '.join(game.dealer_hand)
-        dealer_value, _ = game.calculate_dealer_value()
         
-        message = [
-            f"§6===== 本局结束 =====",
-            f"§a你的牌:"
-        ]
+        # 预构建消息
+        message = [f"§6===== 本局结束 =====", f"§a你的牌:"]
         
         for i, hand in enumerate(game.hands):
-            hand_value, _ = hand.calculate_value()
             if hand.surrendered:
                 status = "§8(投降)"
             elif hand.busted:
                 status = "§c(爆牌)"
             else:
-                status = f"§a({hand_value}点)"
+                status = f"§a({hand.calculate_value()}点)"
                 
-            hand_prefix = f"手牌{i+1}:" if len(game.hands) > 1 else ""
-            message.append(f"§f{hand_prefix}{hand} {status}")
+            prefix = f"手牌{i+1}:" if len(game.hands) > 1 else ""
+            blackjack_info = "§6(Blackjack!)" if hand.is_blackjack() else ""
+            bet_info = "§6(双倍)" if hand.doubled else ""
+            message.append(f"§f{prefix}{hand} {status} {blackjack_info} {bet_info}")
         
         message.extend([
-            f"§6庄家: {dealer_cards} ({dealer_value}点)",
+            f"§6庄家: {dealer_cards} ({game.dealer_value}点)",
             f"§6本局得分: §e{round_score_display}",
             f"§6总得分: §e{game.score:.1f}" if game.score % 1 > 0 else f"§6总得分: §e{int(game.score)}",
             f"§6=================="
@@ -431,9 +479,11 @@ def on_load(server: PluginServerInterface, old):
         .then(Literal("p").runs(lambda src: game.process_command(src.player, 'p')))
         .then(Literal("sur").runs(lambda src: game.process_command(src.player, 'sur')))
     )
+    
     # 保存实例
     server.register_help_message('!!21', '21点纸牌游戏')
     server.game = game
+
 def on_unload(server: PluginServerInterface):
     """插件卸载时清理"""
     if hasattr(server, 'game'):
